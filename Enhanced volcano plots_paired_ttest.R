@@ -18,13 +18,13 @@ library(readxl)
 
 #### 01 Clean data, add lipid class info ####
 # Import data frame
-df <- read_excel("data/ACTIBATE_raw data+log2.xlsx",sheet = 2,col_names = TRUE)
+df <- read_excel("80_coherence/data after imputation and transformation-noadherence.xlsx",sheet = 1,col_names = TRUE)
 
-df_identifier<- read.table("C:/Users/zhangy28/Downloads/mzquality_legacy-nightly/LIPID_PLATFORM_lipid identifier.csv", header = TRUE,sep = ";")
+df_identifier<- read.table("data/LIPID_PLATFORM_lipid identifier.csv", header = TRUE,sep = ",")
 
 # numeric 
 df <- df %>%
-  mutate_at(vars(3:797), as.numeric)
+  mutate_at(vars(3:794), as.numeric)
 
 #check NA
 if (sum(is.na(df)) == 0) {
@@ -37,7 +37,7 @@ df <- as.data.frame(df) # ERROR:names do not match previous names, commonly occu
 class(df)
 colnames(df)
 any(duplicated(colnames(df)))
-df_long <- melt(df, measure.vars = 3:797, variable_name = "Lipid", value_name = "Value")
+df_long <- melt(df, measure.vars = 3:794, variable_name = "Lipid", value_name = "Value")
 
 
 
@@ -48,7 +48,7 @@ colnames(df_long)[4] = "Value"
 table(is.na(df_long$Value))
 
 # Perform log2
-df_long$log2_value <- log2(df_long$Value)
+df_long$log2_value <- df_long$Value
 
 # Filter group
 df_Moderate_POS <- df_long %>% filter(Group == "Moderate_POS")
@@ -67,22 +67,33 @@ df1$Group <- as.factor(df1$Group)
 df1$Value <- as.numeric(df1$Value)
 
 # Perform Wilcox test and t test
-lipid_vec <- unique(df1[c("Lipid")])
-df_result <- data.frame("Lipid" = lipid_vec$Lipid, "wilcox.test" = 1, "t.test" = 1)
-
-for (idx in 1:nrow(df_result)) 
-{
+df_result <- data.frame(
+  "Lipid" = unique(df1$Lipid),
+  "t.test.paired" = NA
+)
+for (idx in 1:nrow(df_result)) {
   val <- as.character(df_result$Lipid[idx])
-  df_filter = df1[df1$Lipid == val,]
-  df_result$wilcox.test[idx] <- wilcox.test(log2_value~Group, data = df_filter)$p.value
-  df_result$t.test[idx] <- t.test(log2_value~Group, data = df_filter, paired = TRUE)$p.value
+  # 提取该 Lipid 对应的数据
+  df_filter <- df1[df1$Lipid == val, ]
+  # reshape 到宽表，Name 是配对键
+  df_wide <- reshape(df_filter[, c("Name", "Group", "log2_value")],
+                     timevar = "Group",
+                     idvar = "Name",
+                     direction = "wide")
+  # 只有在两个组都有值的情况下才进行配对检验
+  if (all(c("log2_value.Moderate_PRE", "log2_value.Moderate_POS") %in% colnames(df_wide))) {
+    df_result$t.test.paired[idx] <- t.test(
+      df_wide$log2_value.Moderate_PRE,
+      df_wide$log2_value.Moderate_POS,
+      paired = TRUE
+    )$p.value
+  } else {
+    df_result$t.test.paired[idx] <- NA
+  }
 }
-
 # p-adjust
 df_result <- df_result %>%
-  mutate(wilcox_fdr = p.adjust(df_result$wilcox.test, method = "fdr")) %>%
   mutate(t_fdr = p.adjust(df_result$t.test, method = "fdr"))
-
 #write.csv(df_result,"Volcano plot_ttests_MS human_Moderate_PRE_Moderate_POS.csv", row.names = TRUE)
 
 
@@ -109,62 +120,11 @@ df_plot <- df_result %>%
 
 
 # keep t_fdr test result
-
-df_plot <- df_plot %>% select(c(Lipid, t.test, log2FoldChange))
-
-#df_plot <- df_plot %>% select(-c(ave_Moderate_PRE, ave_Moderate_POS, wilcox.test, ))
+df_plot <- df_plot %>% select(c(Lipid, t.test.paired, log2FoldChange))
+#df_plot <- df_plot %>% select(-c(ave_Moderate_PRE, ave_Moderate_POST, wilcox.test, ))
 colnames(df_plot)[2] = "p.value"
-
 colnames(df_plot)[1] = "Lipid"
 df_plot$Lipid <- as.character(df_plot$Lipid)
-
-
-### old version volcano plot
-##### 02-02 Plot with lipid name and color by class ####
-
-# Left join, add class info
-df_plot2 <- df_plot %>%
-  left_join(df_identifier, by = c("Lipid" = "Metabolite"))
-
-### old version volcano plot
-# Add new column: Expression, show as class info
-df_plot2$Expression <- df_plot2$Class
-df_plot2$Expression[df_plot2$`p.value`>0.05]=NA
-df_plot2$Expression[df_plot2$log2FoldChange < log2(1.2) & df_plot2$log2FoldChange > -log2(1.2)]=NA
-
-df_plot2$label <- df_plot2$Lipid
-df_plot2$label[df_plot2$`p.value`>0.05]=NA
-df_plot2$label[df_plot2$log2FoldChange < log2(1.2) & df_plot2$log2FoldChange > -log2(1.2)]=NA
-
-g <- ggplot(data=df_plot2, aes(x = log2FoldChange, y = -log10(p.value), col=Expression, label=NA)) +
-  geom_point() + theme_minimal() + labs(title = "max.overlaps = infi")
-scale_color_manual(values=c("yellow", "orange","blue","purple", "cornflowerblue","indianred4","forestgreen", "midnightblue","steelblue4","black","lightcoral","gold2","plum4","tan"))
-
-g1 <- g + geom_vline(xintercept=c(-log2(1.2), log2(1.2)), col="red", size=0.5, linetype = "dashed") +
-  geom_hline(yintercept=-log10(0.05), col="red", size=0.5, linetype = "dashed") +
-  annotate ("text", x = 1.2, y = 0.8, label = "p-value=0.05", 
-            colour = "darkblue", fontface = "italic") +
-  annotate ("text", x = 0.335, y = 2.5, label = "1.2FC", 
-            colour = "darkblue", fontface = "italic") +
-  annotate ("text", x = -0.35, y = 2.5, label = "-1.2FC", 
-            colour = "darkblue", fontface = "italic")
-g2 <- g1 + geom_text_repel(min.segment.length = 0, seed = 42, box.padding = 0.1,max.overlaps = 120) +
-  ggtitle("MOD-EX") + theme(plot.title = element_text(hjust = 0.5, size=14, face="bold")) +
-  xlim(c(-2, 3)) +  # Adjust the range of x-axis as per your data
-  ylim(c(-2, 6))     # Adjust the range of y-axis as per your data
-g2
-
-ggsave("Volcano_Moderate_POSvsModerate_PRE——1.2 fold.png", width = 3200, height = 1800, dpi = 300, units = "px")
-###export
-png(
-  filename = "volcano_MOD_paird_new.png",
-  type = "cairo", # 抗锯齿
-  res = 300, # 300ppi 分辨率
-  width = 2600, height = 2000,
-  bg = "transparent" # 透明背景
-)
-print(g2)
-dev.off()
 
 
 ### new version volcano plot
@@ -216,14 +176,14 @@ g <- ggplot(data = df_plot2, aes(x = log2FoldChange, y = -log10(p.value), col = 
   geom_hline(yintercept = -log10(0.05), col = "red", size = 0.5, linetype = "dashed") +
   annotate("text", x = 1.2, y = 0.8, label = "p-value=0.05", colour = "darkblue", fontface = "italic") +
   geom_text_repel(min.segment.length = 0, seed = 42, box.padding = 0.1, max.overlaps = 120) +
-  ggtitle("CON") +
+  ggtitle("VIG-EX") +
   theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
   xlim(c(-1, 2)) +
   ylim(c(0, 6))
 g
 ###export
 png(
-  filename = "results/volcano_con_paird_new_lable.png",
+  filename = "80_coherence/results/volcano_VIG_paird_no_cohe.png",
   type = "cairo", # 抗锯齿
   res = 300, # 300ppi 分辨率
   width = 2600, height = 2000,
@@ -284,7 +244,7 @@ bar_plot <- ggplot(sig_count, aes(x = Count, y = reorder(Expression, Count))) +
 bar_plot
 ###export
 png(
-  filename = "results/barplot_mod_paird_new_lable.png",
+  filename = "80_coherence/results/barplot_mod_paird_no_cohe.png",
   type = "cairo", # 抗锯齿
   res = 300, # 300ppi 分辨率
   width = 1200, height = 2500,
